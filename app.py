@@ -46,6 +46,8 @@ DOC_INFO = {
     "07": ("💶", "Зелений тариф"),
     "08": ("🇺🇦", "Сонячна енергетика України"),
     "09": ("📄", "Наукова стаття (КНУТД)"),
+    "od": ("📘", "Інструкція до сонячних панелей"),
+    "se": ("🎓", "Дипломний проєкт про СЕС"),
 }
 EXAMPLES = [
     "Чим гібридна СЕС відрізняється від мережевої?",
@@ -85,28 +87,28 @@ html, body, [class*="css"], .stMarkdown, .stChatMessage, button, input, textarea
 }
 
 .src-card {
-  background: #121B30; border: 1px solid #263556; border-left: 4px solid #FBBF24;
+  background: rgba(127,127,127,.08); border: 1px solid rgba(127,127,127,.25); border-left: 4px solid #F59E0B;
   border-radius: 12px; padding: 10px 14px; margin: 8px 0;
 }
-.src-card .head { font-weight: 700; color: #FBBF24; font-size: .9rem; }
-.src-card .meta { color: #8EA0C4; font-size: .78rem; margin-left: 6px; }
-.src-card .body { color: #C9D3E8; font-size: .85rem; margin-top: 4px; line-height: 1.45; }
+.src-card .head { font-weight: 700; color: #D97706; font-size: .9rem; }
+.src-card .meta { opacity: .65; font-size: .78rem; margin-left: 6px; }
+.src-card .body { opacity: .85; font-size: .85rem; margin-top: 4px; line-height: 1.45; }
 
 .doc-tile {
-  background: #121B30; border: 1px solid #263556; border-radius: 16px;
+  background: rgba(127,127,127,.08); border: 1px solid rgba(127,127,127,.25); border-radius: 16px;
   padding: 16px; margin-bottom: 12px; min-height: 120px;
 }
 .doc-tile .icon { font-size: 1.6rem; }
 .doc-tile .title { font-weight: 800; margin-top: 4px; }
-.doc-tile .file { color: #8EA0C4; font-size: .78rem; word-break: break-all; }
+.doc-tile .file { opacity: .65; font-size: .78rem; word-break: break-all; }
 
 .step { display: flex; gap: 12px; align-items: flex-start; margin: 10px 0; }
 .step .num {
   flex: 0 0 30px; height: 30px; border-radius: 50%; background: #FBBF24; color: #1A1206;
   font-weight: 800; display: flex; align-items: center; justify-content: center;
 }
-.no-info { background: #2A1F0B; border: 1px dashed #F59E0B; border-radius: 10px; padding: 8px 12px; font-size: .85rem; }
-[data-testid="stChatMessage"] { background: #111A2E; border-radius: 16px; border: 1px solid #1F2C4A; }
+.no-info { background: rgba(245,158,11,.12); border: 1px dashed #F59E0B; border-radius: 10px; padding: 8px 12px; font-size: .85rem; }
+[data-testid="stChatMessage"] { background: rgba(251,191,36,.07); border-radius: 16px; border: 1px solid rgba(251,191,36,.28); }
 </style>
 """, unsafe_allow_html=True)
 
@@ -128,7 +130,9 @@ def get_api_key():
 # ------------------------------------------------------------
 def load_documents(docs_dir):
     documents = []
-    for path in sorted(glob.glob(os.path.join(docs_dir, "*"))):
+    for path in sorted(glob.glob(os.path.join(docs_dir, "**", "*"), recursive=True)):  # шукаємо і у вкладених папках
+        if not os.path.isfile(path):
+            continue
         file_name = os.path.basename(path)
         ext = os.path.splitext(file_name)[1].lower()
         if ext in (".md", ".txt"):
@@ -155,12 +159,26 @@ def get_embeddings():
     return FastEmbedEmbeddings(model_name=EMBEDDING_MODEL)
 
 
+def find_index_dir():
+    """Папка з index.faiss: faiss_index/ або вкладена (якщо папку завантажили всередину іншої)."""
+    for path in glob.glob("**/index.faiss", recursive=True):
+        if ".streamlit" not in path:
+            return os.path.dirname(path) or "."
+    return None
+
+
+def repo_files():
+    return sorted(p for p in glob.glob("**/*", recursive=True)
+                  if os.path.isfile(p) and not p.startswith((".git", "__pycache__")))[:60]
+
+
 @st.cache_resource(show_spinner="📚 Завантаження бази знань...")
 def get_vectorstore():
     embeddings = get_embeddings()
-    if os.path.isdir(INDEX_DIR):
+    index_dir = find_index_dir()
+    if index_dir:
         try:
-            return FAISS.load_local(INDEX_DIR, embeddings,
+            return FAISS.load_local(index_dir, embeddings,
                                     allow_dangerous_deserialization=True, **VS_KWARGS)
         except Exception:
             pass  # якщо збережене сховище несумісне - будуємо заново з документів
@@ -169,6 +187,8 @@ def get_vectorstore():
         separators=["\n## ", "\n\n", "\n", ". ", " ", ""],
     )
     chunks = splitter.split_documents(load_documents(DOCS_DIR))
+    if not chunks:
+        return None
     for i, ch in enumerate(chunks):
         ch.metadata["chunk_id"] = i
     return FAISS.from_documents(chunks, embeddings, **VS_KWARGS)
@@ -277,6 +297,12 @@ def show_sources(sources):
 # ------------------------------------------------------------
 api_key = get_api_key()
 vectorstore = get_vectorstore()
+if vectorstore is None:
+    st.error("Не знайдено ні векторного сховища (faiss_index/index.faiss), ні документів у папці docs. "
+             "Перевірте, що в репозиторії GitHub є папки docs і faiss_index поруч з app.py.")
+    st.write("Файли, які бачить застосунок:")
+    st.code("\n".join(repo_files()) or "(порожньо)")
+    st.stop()
 all_chunks = list(vectorstore.docstore._dict.values())
 all_files = sorted({d.metadata["file_name"] for d in all_chunks})
 
@@ -284,7 +310,7 @@ st.markdown(f"""
 <div class="hero">
   <h1>☀️ Сонячний консультант</h1>
   <p>Запитайте про сонячні електростанції: панелі, інвертори, акумулятори, зелений тариф чи розвиток сонячної енергетики в Україні.
-  Відповідь складається <b>лише</b> з реальних документів бази знань (статті Вікіпедії та наукова стаття) і містить посилання на джерела.</p>
+  Відповідь складається <b>лише</b> з реальних документів бази знань (статті Вікіпедії, інструкція до панелей і дипломний проєкт) і містить посилання на джерела.</p>
   <div class="badges">
     <span class="badge">📚 {len(all_files)} документів</span>
     <span class="badge">🧩 {vectorstore.index.ntotal} фрагментів</span>
@@ -400,8 +426,8 @@ with tab_docs:
 with tab_how:
     st.markdown("#### Як консультант знаходить відповідь (RAG)")
     steps = [
-        ("Документи", f"{len(all_files)} реальних матеріалів про СЕС: статті української Вікіпедії (CC BY-SA 4.0) "
-                      "та наукова стаття з Вісника КНУТД у форматах .md, .txt і .pdf."),
+        ("Документи", f"{len(all_files)} реальних матеріалів про СЕС: статті української Вікіпедії (CC BY-SA 4.0), "
+                      "інструкція виробника сонячних панелей і дипломний проєкт у форматах .md, .txt і .pdf."),
         ("Фрагменти", f"Тексти розбиті на фрагменти по ~{CHUNK_SIZE} символів з перекриттям {CHUNK_OVERLAP}."),
         ("Вектори", "Кожен фрагмент перетворено на вектор моделлю paraphrase-multilingual-MiniLM-L12-v2 "
                     "і збережено у сховищі FAISS."),
